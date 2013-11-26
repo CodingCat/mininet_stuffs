@@ -29,7 +29,7 @@ def parseIperf( iperfOutput ):
             lg.error( 'could not parse iperf output: ' + iperfOutput )
             return ''
 
-def iperf(hosts, outfile):
+def iperf(hosts, flowsize, outfile):
         """Run iperf between two hosts.
            hosts: list of hosts; if None, uses opposite hosts
            l4Type: string, one of [ TCP, UDP ]
@@ -45,28 +45,24 @@ def iperf(hosts, outfile):
         iperfArgs = 'iperf '
         bwArgs = ''
         if server not in globalserverlist:
-            server.sendCmd( iperfArgs + '-s ', printPid=True )
+            #server.sendCmd( iperfArgs + '-s ', printPid=True )
+            server.cmd(iperfArgs + '-s &', printPid=True)
             globalserverlist.append(server)
         servout = ''
-        while server.lastPid is None:
-            servout += server.monitor()
+        #while server.lastPid is None:
+         #   servout += server.monitor()
         while 'Connected' not in client.cmd(
                         'sh -c "echo A | telnet -e A %s 5001"' % server.IP()):
             print('waiting for iperf to start up...')
             time.sleep(.5)
-        client.cmd(iperfArgs + '-n 100MB -c ' + server.IP() + ' ' + \
+        client.cmd(iperfArgs + '-n ' + str(flowsize) + 'MB -c ' + server.IP() + ' ' + \
                              bwArgs + " >> " + outfile + "&", printPid=True)
-        globalclientlist[client] = client.lastPid
+        if not globalclientlist.has_key(client):
+            globalclientlist[client] = []
+        globalclientlist[client].append(client.lastPid)
         return
-        '''lg.debug( 'Client output: %s\n' % cliout )
-        server.sendInt()
-        servout += server.waitOutput()
-        lg.debug( 'Server output: %s\n' % servout )
-        result = [parseIperf( servout ), parseIperf( cliout ) ]
-        lg.output( '*** Results: %s\n' % result )'''
-        #return result
 
-def startnewShuffleJob(net, maxmapnum, maxreducenum, hosts):
+def startnewShuffleJob(net, maxmapnum, maxreducenum, hosts, outfile):
 
     random.seed(int(round(time.time() * 1000)))
     hostnum = len(hosts)
@@ -89,10 +85,9 @@ def startnewShuffleJob(net, maxmapnum, maxreducenum, hosts):
         reducers.append(hosts[a])
         selectedReducers.append(a)
     line = ''
-    outfile = "shuffle_" + str(round(time.time()))
     for srcHost in mappers:
         for dstHost in reducers:
-            iperf(hosts=[net.get(srcHost), net.get(dstHost)], outfile=outfile)
+            iperf(hosts=[net.get(srcHost), net.get(dstHost)], flowsize=500, outfile=outfile)
     print line
 
 
@@ -104,13 +99,18 @@ def shufflerPerformanceTest(topo, linkspeed, mapnum, reducenum, jobnum, arrivali
                   controller=partial(RemoteController, ip='127.0.0.1', port=6633))
     print("net is starting")
     net.start()
-    startnewShuffleJob(net, mapnum, reducenum, hosts)
+    outfile = "shuffle_" + str(round(time.time()))
+    for i in range(0, jobnum):
+        print "start a new shuffle job"
+        startnewShuffleJob(net, mapnum, reducenum, hosts, outfile)
+        time.sleep(arrivalinterval)
     waitForAll()
     net.stop()
 
 def waitForAll():
-    for host, pid in globalclientlist.iteritems():
-        host.cmd('wait', pid)
+    for host, pidlist in globalclientlist.iteritems():
+        for pid in pidlist:
+            host.cmd('wait', pid)
 
 if __name__ == '__main__':
     if len(sys.argv) != 7:
