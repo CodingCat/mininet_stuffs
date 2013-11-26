@@ -11,30 +11,89 @@ import sys
 import random
 import time
 from functools import partial
+import re
+
+globalserverlist = []
+globalclientlist = {}
+
+def parseIperf( iperfOutput ):
+        """Parse iperf output and return bandwidth.
+           iperfOutput: string
+           returns: result string"""
+        r = r'([\d\.]+ \w+/sec)'
+        m = re.findall( r, iperfOutput )
+        if m:
+            return m[-1]
+        else:
+            # was: raise Exception(...)
+            lg.error( 'could not parse iperf output: ' + iperfOutput )
+            return ''
+
+def iperf(hosts, outfile):
+        """Run iperf between two hosts.
+           hosts: list of hosts; if None, uses opposite hosts
+           l4Type: string, one of [ TCP, UDP ]
+           returns: results two-element array of server and client speeds"""
+       # if not hosts:
+       #     hosts = [ self.hosts[ 0 ], self.hosts[ -1 ] ]
+       # else:
+       #     assert len( hosts ) == 2
+        client, server = hosts
+        print( '*** Iperf: testing bandwidth between ' )
+        print( "%s and %s\n" % ( client.name, server.name ) )
+        #server.cmd( 'killall -9 iperf' )
+        iperfArgs = 'iperf '
+        bwArgs = ''
+        if server not in globalserverlist:
+            server.sendCmd( iperfArgs + '-s ', printPid=True )
+            globalserverlist.append(server)
+        servout = ''
+        while server.lastPid is None:
+            servout += server.monitor()
+        while 'Connected' not in client.cmd(
+                        'sh -c "echo A | telnet -e A %s 5001"' % server.IP()):
+            print('waiting for iperf to start up...')
+            time.sleep(.5)
+        client.cmd(iperfArgs + '-n 100MB -c ' + server.IP() + ' ' + \
+                             bwArgs + " >> " + outfile + "&", printPid=True)
+        globalclientlist[client] = client.lastPid
+        return
+        '''lg.debug( 'Client output: %s\n' % cliout )
+        server.sendInt()
+        servout += server.waitOutput()
+        lg.debug( 'Server output: %s\n' % servout )
+        result = [parseIperf( servout ), parseIperf( cliout ) ]
+        lg.output( '*** Results: %s\n' % result )'''
+        #return result
 
 def startnewShuffleJob(net, maxmapnum, maxreducenum, hosts):
+
     random.seed(int(round(time.time() * 1000)))
     hostnum = len(hosts)
     mapnum = random.randint(1, maxmapnum)
     reducenum = random.randint(1, maxreducenum)
     mappers = []
     reducers = []
-    iperfport = 40000
-    listeningports = []
+    selectedMappers = []
+    selectedReducers = []
     for i in range(0, mapnum):
-        mappers.append(hosts[random.randint(0, hostnum - 1)])
+        a = random.randint(0, hostnum - 1)
+        while a in selectedMappers:
+            a = random.randint(0, hostnum - 1)
+        mappers.append(hosts[a])
+        selectedMappers.append(a)
     for i in range(0, reducenum):
-        reducers.append(hosts[random.randint(0, hostnum - 1)])
-    for dstHost in reducers:
-        net.get(dstHost).sendCmd('iperf -s -D -p %d ' % int(iperfport))
-        iperfport += 1
-        listeningports.append(iperfport - 1)
+        a = random.randint(0, hostnum - 1)
+        while a in selectedReducers or a in selectedMappers:
+            a = random.randint(0, hostnum - 1)
+        reducers.append(hosts[a])
+        selectedReducers.append(a)
+    line = ''
+    outfile = "shuffle_" + str(round(time.time()))
     for srcHost in mappers:
-        for c in range(0, len(listeningports)):
-            print("testing iperf")
-            net.get(srcHost).sendCmd('iperf -n 500MB -c 127.0.0.1 -p %d ' % listeningports[c])
-            line = net.get(srcHost).waitOutput()
-            print(line)
+        for dstHost in reducers:
+            iperf(hosts=[net.get(srcHost), net.get(dstHost)], outfile=outfile)
+    print line
 
 
 def shufflerPerformanceTest(topo, linkspeed, mapnum, reducenum, jobnum, arrivalinterval):
@@ -46,10 +105,12 @@ def shufflerPerformanceTest(topo, linkspeed, mapnum, reducenum, jobnum, arrivali
     print("net is starting")
     net.start()
     startnewShuffleJob(net, mapnum, reducenum, hosts)
-   # time.sleep(60)
+    waitForAll()
     net.stop()
 
-
+def waitForAll():
+    for host, pid in globalclientlist.iteritems():
+        host.cmd('wait', pid)
 
 if __name__ == '__main__':
     if len(sys.argv) != 7:
