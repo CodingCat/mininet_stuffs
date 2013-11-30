@@ -2,7 +2,7 @@
 RipL+POX.  As simple a data center controller as possible.
 """
 
-import logging
+import sys
 import random
 from struct import pack
 from zlib import crc32
@@ -81,6 +81,15 @@ class Switch (EventMixin):
     self.connection.send(msg)
 
 
+  def installDrop(self, match, buf = NO_BUFFER, idle_timeout = 0, hard_timeout = 0,
+              priority = of.OFP_DEFAULT_PRIORITY):
+    msg = of.ofp_flow_mod()
+    msg.match = match
+    msg.idle_timeout = idle_timeout
+    msg.hard_timeout = hard_timeout
+    msg.priority = priority
+    msg.buffer_id = buf
+    self.connection.send(msg)
 
   def install(self, port, match, buf = NO_BUFFER, idle_timeout = 0, hard_timeout = 0,
               priority = of.OFP_DEFAULT_PRIORITY):
@@ -225,16 +234,24 @@ class RipLController(EventMixin):
       self.switches[node_dpid].install(out_port, match)
 
   def _flood(self, event):
+
+    def macToDPID(macstr):
+        print("mac str: " + macstr)
+        macsegs = macstr.split(':')
+        podid = int(macsegs[3], 16)
+        swid = int(macsegs[4], 16)
+        hostid = int(macsegs[5], 16)
+        return (podid << 16) + (swid << 8) + hostid
+
     dpid = event.dpid
     in_port = event.port
     buffer_id = event.ofp.buffer_id
     t = self.t
-    pkt_dst = event.parsed
+    pkt_dst = event.parsed.dst
     hosts = self._raw_dpids(self.t.layer_nodes(self.t.LAYER_HOST))
 
     if buffer_id == NO_BUFFER or buffer_id is None or \
-            not pkt_dst in hosts:
-        #self.switches[dpid].send_packet_data(of.OFPP_FLOOD, inport=in_port, data=event.data)
+            not macToDPID(str(pkt_dst)) in hosts:
         for sw in self._raw_dpids(t.layer_nodes(t.LAYER_EDGE)):
             ports = []
             sw_name = t.id_gen(dpid=sw).name_str()
@@ -243,7 +260,8 @@ class RipLController(EventMixin):
                 if sw != dpid or (sw == dpid and in_port != sw_port):
                     ports.append(sw_port)
             for port in ports:
-                self.switches[sw].send_packet_data(outport=port, data=event.data)
+                if not self.switches[sw].connection is None:
+                    self.switches[sw].send_packet_data(outport=port, data=event.data)
     else:
         self.switches[dpid].send_packet_bufid(of.OFPP_FLOOD, inport=in_port, bufferid=buffer_id)
 
@@ -258,10 +276,22 @@ class RipLController(EventMixin):
         switchpodid = switchstrarr[3]
         switchswitchid = switchstrarr[4]
         return hostpodid == switchpodid and hostswitchid == switchswitchid
+
+    def isIPV6Address(macstr):
+        macsegs = macstr.split(":")
+        return macsegs[0] == "33" and macsegs[1] == "33"
+
+
     packet = event.parsed
     dpid = event.dpid
     in_port = event.port
-    #t = self.t
+
+    if isIPV6Address(str(packet.dst)):
+        self.switches[dpid].installDrop(
+            match=of.ofp_match.from_packet(packet),
+            idle_timeout=IDLE_TIMEOUT)
+        return 
+
     # Learn MAC address of the sender on every packet-in.
     if isDirectlyAttached(str(self.switches[dpid]), str(packet.src)) and \
 	    not packet.src in self.macTable:
@@ -271,7 +301,6 @@ class RipLController(EventMixin):
     if packet.dst in self.macTable:
       out_dpid, out_port = self.macTable[packet.dst]
       next_out_port, route = self._install_reactive_path(event, out_dpid, out_port, packet)
-      #next_out_port = self.select_next_outport(event, out_dpid, out_port, packet)
       if buffer_id == NO_BUFFER:
         self.switches[dpid].send_packet_data(outport=next_out_port, data=event.data)
       elif not buffer_id is None:
@@ -545,7 +574,7 @@ def launch(topo = None, routing = None, mode = None):
   """
   Args in format toponame,arg1,arg2,...
   """
-  print("hello world")
+  print("mininet_stuffs")
 
   if not mode:
     mode = DEF_MODE
