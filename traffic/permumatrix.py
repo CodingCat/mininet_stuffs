@@ -4,6 +4,7 @@ import sys
 import random
 import time
 from functools import partial
+from datetime import datetime
 
 from mininet.log import lg
 from mininet.net import Mininet
@@ -62,6 +63,7 @@ if __name__ == '__main__':
     if len(sys.argv) != 4:
         print("usage:shuffle.py podnumber linkspeed(Gbps) flowsize")
         sys.exit(0)
+    startTime = datetime.now()
     lg.setLogLevel('info')
     print("*** Running Permutation Matrix Performance Test under FatTree\n")
     topo = FatTreeTopo(k=int(sys.argv[1]), speed=int(sys.argv[2]))
@@ -75,5 +77,5 @@ if __name__ == '__main__':
     permuMatrix(net, topo, int(sys.argv[3]))
     waitForAll()
     net.stop()
-
+    print("time cost:" + str(datetime.now() - startTime))
     print("*** End\n")
