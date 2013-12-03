@@ -17,7 +17,7 @@ from pox.lib.packet.udp import udp
 from pox.lib.packet.tcp import tcp
 
 from ripl.mn import topos
-
+from mininet.log import lg
 from util import buildTopo, getRouting
 
 log = core.getLogger()
@@ -48,7 +48,10 @@ class Switch (EventMixin):
     self._listeners = None
 
   def __repr__ (self):
-    return dpidToStr(self.dpid)
+    pod = (self.dpid & 0xff0000) >> 16
+    swid = (self.dpid & 0xff00) >> 8
+    hostid = (self.dpid & 0xff) 
+    return "00-00-00-%d-%d-%d" % (pod, swid, hostid) 
 
   def disconnect (self):
     if self.connection is not None:
@@ -80,7 +83,7 @@ class Switch (EventMixin):
     msg.buffer_id = bufferid
     self.connection.send(msg)
 
-
+    
   def installDrop(self, match, buf = NO_BUFFER, idle_timeout = 0, hard_timeout = 0,
               priority = of.OFP_DEFAULT_PRIORITY):
     msg = of.ofp_flow_mod()
@@ -175,6 +178,7 @@ class RipLController(EventMixin):
 
   def _install_reactive_path(self, event, out_dpid, final_out_port, packet):
     "Install entries on route between two switches."
+    log.info("out_dpid: %d" % out_dpid)
     in_name = self.t.id_gen(dpid = event.dpid).name_str()
     out_name = self.t.id_gen(dpid = out_dpid).name_str()
     log.info("in_name:%s, out_name:%s, packet_dst:%s" %
@@ -182,6 +186,7 @@ class RipLController(EventMixin):
     hash_ = self._ecmp_hash(packet)
     route = self.r.get_route(in_name, out_name, hash_)
     log.info("route: %s, for: %s" % (route, packet))
+    log.info("packet src ip:" + str(packet.next.srcip))
     match = of.ofp_match.from_packet(packet)
     for i, node in enumerate(route):
       node_dpid = self.t.id_gen(name = node).dpid
@@ -250,8 +255,7 @@ class RipLController(EventMixin):
     pkt_dst = event.parsed.dst
     hosts = self._raw_dpids(self.t.layer_nodes(self.t.LAYER_HOST))
 
-    if buffer_id == NO_BUFFER or buffer_id is None or \
-            not macToDPID(str(pkt_dst)) in hosts:
+    if buffer_id == NO_BUFFER or buffer_id is None:
         for sw in self._raw_dpids(t.layer_nodes(t.LAYER_EDGE)):
             ports = []
             sw_name = t.id_gen(dpid=sw).name_str()
@@ -268,6 +272,24 @@ class RipLController(EventMixin):
 
 
   def _handle_packet_reactive(self, event):
+    def shallFlood(dpid, packet):
+        (dstpodid, dstswid, dsthostid) = getIDsFromMac(str(packet.dst))
+        (srcpodid, srcswid, srchostid) = getIDsFromMac(str(packet.src))
+        eventname = self.t.id_gen(dpid=dpid)
+        if (self.t.layer(eventname.name_str()) == 1):#aggregate switch
+            return dstpodid == eventname.pod or srcpodid == eventname.pod
+        if (self.t.layer(eventname.name_str()) == 2):#edge switch
+            connectingWithDst = dstpodid == eventname.pod and dstswid == eventname.sw
+            connectingWithSrc = srcpodid == eventname.pod and srcswid == eventname.sw
+            return connectingWithSrc or connectingWithDst
+        if (self.t.layer(eventname.name_str()) == 0):#core switch
+            return True
+
+    def getIDsFromMac(macaddr):
+        return (int(macaddr.split(':')[3]), \
+                int(macaddr.split(':')[4]), \
+                int(macaddr.split(':')[5]))
+
     def isDirectlyAttached(swdpid, macHost):
         hoststrarr = macHost.split(':')
         hostpodid = hoststrarr[3]
@@ -280,7 +302,6 @@ class RipLController(EventMixin):
     def isIPV6Address(macstr):
         macsegs = macstr.split(":")
         return macsegs[0] == "33" and macsegs[1] == "33"
-
 
     packet = event.parsed
     dpid = event.dpid
@@ -300,6 +321,10 @@ class RipLController(EventMixin):
     # Insert flow, deliver packet directly to destination.
     if packet.dst in self.macTable:
       out_dpid, out_port = self.macTable[packet.dst]
+      print("packet dst:%s, out_dpid:%s, out_dpid:%d" % \
+              (str(packet.dst), str(self.switches[out_dpid]), out_dpid))
+      print (str(isDirectlyAttached(str(self.switches[out_dpid]), str(packet.dst))))
+      assert isDirectlyAttached(str(self.switches[out_dpid]), str(packet.dst)) == True 
       next_out_port, route = self._install_reactive_path(event, out_dpid, out_port, packet)
       if buffer_id == NO_BUFFER:
         self.switches[dpid].send_packet_data(outport=next_out_port, data=event.data)
@@ -308,9 +333,23 @@ class RipLController(EventMixin):
       else:
           self.switches[out_dpid].send_packet_data(outport=out_port, data=event.data)
     else:
-        log.info("flooding %s, buffer_id: %s" %
-                 (packet, buffer_id))
-        self._flood(event)
+        (outpod, outsw, outhost) = getIDsFromMac(str(packet.dst))
+        out_dpid= self.t.id_gen(pod= outpod, sw= outsw, host= 1).dpid
+        out_port = outhost - 1#in openflow, port number starts from 1
+        next_out_port, route = self._install_reactive_path(event, out_dpid, out_port, packet)
+        if buffer_id == NO_BUFFER:
+            self.switches[dpid].send_packet_data(outport=next_out_port, data=event.data)
+        elif not buffer_id is None:
+            self.switches[dpid].send_packet_bufid(outport=next_out_port, inport=in_port, bufferid=buffer_id)
+        else:
+            self.switches[out_dpid].send_packet_data(outport=out_port, data=event.data)
+    ''' if shallFlood(dpid, packet):
+           log.info("flooding %s, buffer_id: %s" %
+                   (packet, buffer_id))
+           self._flood(event)
+       else:
+           self.switches[dpid].installDrop(match=of.ofp_match.from_packet(packet), \
+                    buf=buffer_id, idle_timeout=IDLE_TIMEOUT)'''
 
   def _handle_packet_proactive(self, event):
     packet = event.parse()
@@ -587,4 +626,5 @@ def launch(topo = None, routing = None, mode = None):
 
   core.registerNew(RipLController, t, r, mode)
 
+  lg.setLogLevel('info')
   log.info("RipL-POX running with topo=%s." % topo)
