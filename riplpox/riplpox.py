@@ -186,7 +186,6 @@ class RipLController(EventMixin):
     hash_ = self._ecmp_hash(packet)
     route = self.r.get_route(in_name, out_name, hash_)
     log.info("route: %s, for: %s" % (route, packet))
-    log.info("packet src ip:" + str(packet.next.srcip))
     match = of.ofp_match.from_packet(packet)
     for i, node in enumerate(route):
       node_dpid = self.t.id_gen(name = node).dpid
@@ -302,6 +301,10 @@ class RipLController(EventMixin):
     def isIPV6Address(macstr):
         macsegs = macstr.split(":")
         return macsegs[0] == "33" and macsegs[1] == "33"
+    
+    def isMulticastAddress(macstr):
+        macsegs = macstr.split(":")
+        return macsegs[0] == "ff" and macsegs[1] == "ff"
 
     packet = event.parsed
     dpid = event.dpid
@@ -333,23 +336,25 @@ class RipLController(EventMixin):
       else:
           self.switches[out_dpid].send_packet_data(outport=out_port, data=event.data)
     else:
-        (outpod, outsw, outhost) = getIDsFromMac(str(packet.dst))
-        out_dpid= self.t.id_gen(pod= outpod, sw= outsw, host= 1).dpid
-        out_port = outhost - 1#in openflow, port number starts from 1
-        next_out_port, route = self._install_reactive_path(event, out_dpid, out_port, packet)
-        if buffer_id == NO_BUFFER:
-            self.switches[dpid].send_packet_data(outport=next_out_port, data=event.data)
-        elif not buffer_id is None:
-            self.switches[dpid].send_packet_bufid(outport=next_out_port, inport=in_port, bufferid=buffer_id)
+        if not isMulticastAddress(str(packet.dst)):
+            (outpod, outsw, outhost) = getIDsFromMac(str(packet.dst))
+            out_dpid= self.t.id_gen(pod= outpod, sw= outsw, host= 1).dpid
+            out_port = outhost - 1#in openflow, port number starts from 1
+            next_out_port, route = self._install_reactive_path(event, out_dpid, out_port, packet)
+            if buffer_id == NO_BUFFER:
+                self.switches[dpid].send_packet_data(outport=next_out_port, data=event.data)
+            elif not buffer_id is None:
+                self.switches[dpid].send_packet_bufid(outport=next_out_port, inport=in_port, bufferid=buffer_id)
+            else:
+                self.switches[out_dpid].send_packet_data(outport=out_port, data=event.data)
         else:
-            self.switches[out_dpid].send_packet_data(outport=out_port, data=event.data)
-    ''' if shallFlood(dpid, packet):
-           log.info("flooding %s, buffer_id: %s" %
-                   (packet, buffer_id))
-           self._flood(event)
-       else:
-           self.switches[dpid].installDrop(match=of.ofp_match.from_packet(packet), \
-                    buf=buffer_id, idle_timeout=IDLE_TIMEOUT)'''
+            if isMulticastAddress(str(packet.dst)) or shallFlood(dpid, packet):
+                log.info("flooding %s, buffer_id: %s" %
+                       (packet, buffer_id))
+                self._flood(event)
+            else:
+                self.switches[dpid].installDrop(match=of.ofp_match.from_packet(packet), \
+                    buf=buffer_id, idle_timeout=IDLE_TIMEOUT)
 
   def _handle_packet_proactive(self, event):
     packet = event.parse()

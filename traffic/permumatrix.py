@@ -40,6 +40,7 @@ def iperf(hosts, flowsize, outfile):
 
 def permuMatrix(net, fattreetopo, flowsize):
     selectedhost = []
+    print("starting permumatrix")
     hosts = fattreetopo.layer_nodes(fattreetopo.LAYER_HOST)
     outfile = "permumatrix_" + str(round(time.time()))
     for host in hosts:

@@ -144,6 +144,11 @@ class StructuredTopo(Topo):
         '''
         layer = self.layer(name) - 1
         nodes = [n for n in self.g[name] if self.layer(n) == layer]
+	for node in self.g.nodes():
+            if name in self.g[node] and self.layer(node) == layer \
+                    and node not in nodes:
+                nodes.append(node)
+	#print("up_nodes: %d" % len(self.g[name]))
         return nodes
 
     def down_nodes(self, name):
@@ -154,6 +159,10 @@ class StructuredTopo(Topo):
         '''
         layer = self.layer(name) + 1
         nodes = [n for n in self.g[name] if self.layer(n) == layer]
+	for node in self.g.nodes():
+            if name in self.g[node] and self.layer(node) == layer \
+                    and node not in nodes:
+                nodes.append(node)
         return nodes
 
     def up_edges(self, name):
@@ -341,13 +350,17 @@ class FatTreeTopo(StructuredTopo):
                     host_id = self.id_gen(p, e, h).name_str()
                     host_opts = self.def_nopts(self.LAYER_HOST, host_id)
                     self.addHost(host_id, **host_opts)
+		    print("add link between %s and %s" % (host_id, edge_id))		    
                     self.addLink(host_id, edge_id)
+		    print(str(len(self.g[str(host_id)])) + ":" + str(len(self.g[str(edge_id)])))
 
                 for a in agg_sws:
                     agg_id = self.id_gen(p, a, 1).name_str()
                     agg_opts = self.def_nopts(self.LAYER_AGG, agg_id)
                     self.addSwitch(agg_id, **agg_opts)
+		    print("add link between %s and %s" % (edge_id, agg_id))		    
                     self.addLink(edge_id, agg_id)
+		    print(str(len(self.g[str(edge_id)])) + ":" + str(len(self.g[str(agg_id)])))
 
             for a in agg_sws:
                 agg_id = self.id_gen(p, a, 1).name_str()
@@ -356,7 +369,9 @@ class FatTreeTopo(StructuredTopo):
                     core_id = self.id_gen(k, c_index, c).name_str()
                     core_opts = self.def_nopts(self.LAYER_CORE, core_id)
                     self.addSwitch(core_id, **core_opts)
+		    print("add link between %s and %s" % (core_id, agg_id))		    
                     self.addLink(core_id, agg_id)
+		    print(str(len(self.g[str(core_id)])) + ":" + str(len(self.g[str(agg_id)])))
 
 
     def port(self, src, dst):
